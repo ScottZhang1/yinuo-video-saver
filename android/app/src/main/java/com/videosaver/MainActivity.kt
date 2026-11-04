@@ -99,19 +99,47 @@ class ApiClient(private val baseUrl: String) {
     }
 }
 
-// ─── 下载/分享 ───
+// ─── 下载/分享（流式 + 进度回调） ───
+fun formatBytes(bytes: Long): String = when {
+    bytes >= 1L shl 20 -> String.format("%.1f MB", bytes / 1048576.0)
+    bytes >= 1L shl 10 -> String.format("%.0f KB", bytes / 1024.0)
+    else -> "${bytes} B"
+}
+
 class VideoSaver(private val context: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(300, TimeUnit.SECONDS)
+        .readTimeout(600, TimeUnit.SECONDS)
         .build()
 
-    suspend fun downloadAndSave(url: String, title: String, ext: String): Uri = withContext(Dispatchers.IO) {
+    private fun streamDownload(url: String, onProgress: (Long, Long) -> Unit): java.io.InputStream {
         val req = Request.Builder().url(url).build()
         val resp = client.newCall(req).execute()
         if (!resp.isSuccessful) throw IOException("下载失败: HTTP ${resp.code}")
-        val bytes = resp.body?.bytes() ?: throw IOException("下载内容为空")
-        val safeName = title.replace(Regex("[\\\\/:*?\"<>|\\n]"), "_").take(50)
+        val body = resp.body ?: throw IOException("下载内容为空")
+        val total = body.contentLength()
+        val source = body.byteStream()
+        // 包一层流，边读边回调进度
+        return object : java.io.InputStream() {
+            var read = 0L
+            override fun read(): Int = throw IOException("use read(buf)")
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                val n = source.read(b, off, len)
+                if (n > 0) {
+                    read += n
+                    if (total > 0) onProgress(read, total)
+                }
+                return n
+            }
+            override fun close() { source.close() }
+        }
+    }
+
+    suspend fun downloadAndSave(
+        url: String, title: String, ext: String,
+        onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ): Uri = withContext(Dispatchers.IO) {
+        val safeName = title.replace(Regex("[\\/:*?\"<>|\n]"), "_").take(50)
         val fileName = "VS_${System.currentTimeMillis()}_$safeName.$ext"
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
@@ -122,22 +150,32 @@ class VideoSaver(private val context: Context) {
         val resolver = context.contentResolver
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val uri = resolver.insert(collection, values) ?: throw IOException("无法创建媒体文件")
-        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: throw IOException("无法写入文件")
-        values.clear()
-        values.put(MediaStore.Video.Media.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        uri
+        try {
+            val input = streamDownload(url, onProgress)
+            resolver.openOutputStream(uri)?.use { output ->
+                input.use { it.copyTo(output, 8192) }
+            } ?: throw IOException("无法写入文件")
+            values.clear()
+            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            uri
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null) // 失败清理残留
+            throw e
+        }
     }
 
-    suspend fun downloadAndShare(url: String, title: String, ext: String) = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(url).build()
-        val resp = client.newCall(req).execute()
-        if (!resp.isSuccessful) throw IOException("下载失败: HTTP ${resp.code}")
-        val bytes = resp.body?.bytes() ?: throw IOException("下载内容为空")
-        val safeName = title.replace(Regex("[\\\\/:*?\"<>|\\n]"), "_").take(30)
+    suspend fun downloadAndShare(
+        url: String, title: String, ext: String,
+        onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ) = withContext(Dispatchers.IO) {
+        val safeName = title.replace(Regex("[\\/:*?\"<>|\n]"), "_").take(30)
         val dir = File(context.cacheDir, "shared").apply { mkdirs() }
         val file = File(dir, "video_${System.currentTimeMillis()}.$ext")
-        file.writeBytes(bytes)
+        val input = streamDownload(url, onProgress)
+        file.outputStream().use { output ->
+            input.use { it.copyTo(output, 8192) }
+        }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val share = Intent(Intent.ACTION_SEND).apply {
             type = "video/$ext"
@@ -190,6 +228,8 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
     var inputText by remember { mutableStateOf(initialText) }
     var isLoading by remember { mutableStateOf(false) }
     var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadInfo by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<ParseResult?>(null) }
     var statusMsg by remember { mutableStateOf("") }
     var statusIsError by remember { mutableStateOf(false) }
@@ -215,10 +255,10 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("视频保存", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("一诺视频助手", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "粘贴链接 · 一键保存到相册 · 分享微信",
+                    "粘贴链接 · 保存相册 · 一键分享微信",
                     fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f)
                 )
             }
@@ -420,22 +460,62 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
 
                                 Spacer(Modifier.height(16.dp))
 
+                                // 下载进度条
+                                if (isDownloading) {
+                                    Column {
+                                        LinearProgressIndicator(
+                                            progress = { downloadProgress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(8.dp)
+                                                .clip(RoundedCornerShape(4.dp)),
+                                            color = AppColors.Primary,
+                                            trackColor = AppColors.Primary.copy(alpha = 0.12f),
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                "正在下载…",
+                                                fontSize = 12.sp,
+                                                color = AppColors.Primary,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                downloadInfo,
+                                                fontSize = 12.sp,
+                                                color = AppColors.TextSecondary
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(12.dp))
+                                }
+
                                 // 操作按钮
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Button(
                                         onClick = {
                                             scope.launch {
                                                 isDownloading = true
+                                                downloadProgress = 0f
+                                                downloadInfo = "准备下载…"
                                                 statusMsg = "正在下载…"
                                                 statusIsError = false
                                                 try {
-                                                    saver.downloadAndSave(r.videoUrl, r.title, r.ext)
+                                                    saver.downloadAndSave(r.videoUrl, r.title, r.ext) { read, total ->
+                                                        downloadProgress = read.toFloat() / total
+                                                        downloadInfo = "${formatBytes(read)} / ${formatBytes(total)}"
+                                                    }
                                                     statusMsg = "✅ 已保存到相册"
                                                 } catch (e: Exception) {
                                                     statusMsg = "❌ 保存失败: ${e.message}"
                                                     statusIsError = true
                                                 }
                                                 isDownloading = false
+                                                downloadProgress = 0f
+                                                downloadInfo = ""
                                             }
                                         },
                                         enabled = !isDownloading && r.videoUrl.isNotBlank(),
@@ -450,16 +530,23 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                                         onClick = {
                                             scope.launch {
                                                 isDownloading = true
+                                                downloadProgress = 0f
+                                                downloadInfo = "准备下载…"
                                                 statusMsg = "正在下载…"
                                                 statusIsError = false
                                                 try {
-                                                    saver.downloadAndShare(r.videoUrl, r.title, r.ext)
+                                                    saver.downloadAndShare(r.videoUrl, r.title, r.ext) { read, total ->
+                                                        downloadProgress = read.toFloat() / total
+                                                        downloadInfo = "${formatBytes(read)} / ${formatBytes(total)}"
+                                                    }
                                                     statusMsg = "✅ 已打开分享面板"
                                                 } catch (e: Exception) {
                                                     statusMsg = "❌ 分享失败: ${e.message}"
                                                     statusIsError = true
                                                 }
                                                 isDownloading = false
+                                                downloadProgress = 0f
+                                                downloadInfo = ""
                                             }
                                         },
                                         enabled = !isDownloading && r.videoUrl.isNotBlank(),
