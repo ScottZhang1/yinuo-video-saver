@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -255,7 +256,17 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("一诺视频助手", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.White.copy(alpha = 0.2f),
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("📥", fontSize = 28.sp)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("一诺视频助手", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "粘贴链接 · 保存相册 · 一键分享微信",
@@ -284,7 +295,7 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                         onValueChange = { inputText = it },
                         modifier = Modifier.fillMaxWidth(),
                         placeholder = { Text("粘贴抖音 / 视频号 / B站分享链接…", fontSize = 14.sp, color = AppColors.TextSecondary) },
-                        minLines = 2,
+                        minLines = 1,
                         maxLines = 4,
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -304,8 +315,9 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = AppColors.Primary)
-                        ) { Text("📋 粘贴", fontSize = 14.sp) }
+                        ) { Text("粘贴", fontSize = 14.sp, maxLines = 1, softWrap = false) }
 
                         // 清空
                         OutlinedButton(
@@ -316,8 +328,9 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = AppColors.TextSecondary)
-                        ) { Text("🗑 清空", fontSize = 14.sp) }
+                        ) { Text("清空", fontSize = 14.sp, maxLines = 1, softWrap = false) }
 
                         // 解析
                         Button(
@@ -346,12 +359,35 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                             if (isLoading) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                                 Spacer(Modifier.width(6.dp))
-                                Text("解析中", fontSize = 14.sp, color = Color.White)
+                                Text("解析中", fontSize = 14.sp, color = Color.White, maxLines = 1, softWrap = false)
                             } else {
-                                Text("🔍 解析", fontSize = 14.sp, color = Color.White)
+                                Text("解析", fontSize = 14.sp, color = Color.White, maxLines = 1, softWrap = false)
                             }
                         }
                     }
+                }
+            }
+
+            // ── 支持平台 ──
+            Spacer(Modifier.height(14.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("抖音", "视频号", "小红书", "B站", "快手", "西瓜").forEachIndexed { i, name ->
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = AppColors.Primary.copy(alpha = 0.07f)
+                    ) {
+                        Text(
+                            name,
+                            fontSize = 11.sp,
+                            color = AppColors.Primary.copy(alpha = 0.85f),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                    if (i < 5) Spacer(Modifier.width(6.dp))
                 }
             }
 
@@ -370,6 +406,39 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
             }
 
             Spacer(Modifier.height(16.dp))
+
+            // ── 空状态引导 ──
+            if (result == null && statusMsg.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = AppColors.Primary.copy(alpha = 0.08f),
+                        modifier = Modifier.size(88.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("🎬", fontSize = 40.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "粘贴分享链接，一键保存视频",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AppColors.TextSecondary
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "支持抖音 / 视频号 / 小红书 / B站等",
+                        fontSize = 13.sp,
+                        color = AppColors.TextSecondary.copy(alpha = 0.7f)
+                    )
+                }
+            }
 
             // ── 结果卡片 ──
             result?.let { r ->
