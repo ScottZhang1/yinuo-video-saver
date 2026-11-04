@@ -1,11 +1,21 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 半透明白色圆角矩形 -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,30 L54,62 M42,50 L54,62 L66,50 M38,70 L70,70"
-        android:strokeWidth="5"
+        android:pathData="M30,32 h48 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-48 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z"
+        android:fillColor="#33FFFFFF" />
+    <!-- 播放三角 -->
+    <path
+        android:pathData="M46,42 L62,54 L46,66 Z"
+        android:fillColor="#FFFFFF" />
+    <!-- 下载箭头（右下角） -->
+    <path
+        android:pathData="M68,62 L68,74 M62,68 L68,74 L74,68"
+        android:strokeWidth="4"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
+    <!-- 小圆点装饰 -->
+    <path android:pathData="M36,64 m-3,0 a3,3 0 1,1 6,0 a3,3 0 1,1 -6,0" android:fillColor="#80FFFFFF" />
 </vector>

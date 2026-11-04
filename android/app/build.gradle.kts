@@ -38,4 +38,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.json:json:20231013")
+    implementation("io.coil-kt:coil-compose:2.5.0")
 }

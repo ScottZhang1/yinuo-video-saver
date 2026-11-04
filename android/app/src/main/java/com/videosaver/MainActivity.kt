@@ -1,36 +1,59 @@
 package com.videosaver
 
-import android.app.DownloadManager
-import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
-import android.widget.Toast
+import android.content.ContentValues
+import android.content.Context
+import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
 import kotlinx.coroutines.*
-import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+// ─── 配色 ───
+object AppColors {
+    val Primary = Color(0xFF6C5CE7)
+    val PrimaryDark = Color(0xFF5A4BD1)
+    val GradientStart = Color(0xFF6366F1)
+    val GradientEnd = Color(0xFFA855F7)
+    val Surface = Color(0xFFF8F7FC)
+    val CardBg = Color.White
+    val TextPrimary = Color(0xFF1A1A2E)
+    val TextSecondary = Color(0xFF6B7280)
+    val Success = Color(0xFF10B981)
+    val Error = Color(0xFFEF4444)
+}
 
 // ─── API 响应模型 ───
 data class ParseResult(
@@ -76,29 +99,20 @@ class ApiClient(private val baseUrl: String) {
     }
 }
 
-// ─── 下载并保存到相册 ───
+// ─── 下载/分享 ───
 class VideoSaver(private val context: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(300, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * 下载视频并保存到系统相册（MediaStore Movies）
-     * 返回保存后的 Uri
-     */
     suspend fun downloadAndSave(url: String, title: String, ext: String): Uri = withContext(Dispatchers.IO) {
-        // 1. 下载
         val req = Request.Builder().url(url).build()
         val resp = client.newCall(req).execute()
         if (!resp.isSuccessful) throw IOException("下载失败: HTTP ${resp.code}")
         val bytes = resp.body?.bytes() ?: throw IOException("下载内容为空")
-
-        // 2. 文件名
-        val safeName = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(50)
+        val safeName = title.replace(Regex("[\\\\/:*?\"<>|\\n]"), "_").take(50)
         val fileName = "VS_${System.currentTimeMillis()}_$safeName.$ext"
-
-        // 3. 保存到 MediaStore（相册）
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Video.Media.MIME_TYPE, "video/$ext")
@@ -108,217 +122,372 @@ class VideoSaver(private val context: Context) {
         val resolver = context.contentResolver
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val uri = resolver.insert(collection, values) ?: throw IOException("无法创建媒体文件")
-
-        resolver.openOutputStream(uri)?.use { it.write(bytes) }
-            ?: throw IOException("无法写入文件")
-
-        // 4. 标记完成（相册可见）
+        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: throw IOException("无法写入文件")
         values.clear()
         values.put(MediaStore.Video.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
-
         uri
     }
 
-    /**
-     * 下载到临时文件并分享到微信
-     */
     suspend fun downloadAndShare(url: String, title: String, ext: String) = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(url).build()
         val resp = client.newCall(req).execute()
         if (!resp.isSuccessful) throw IOException("下载失败: HTTP ${resp.code}")
         val bytes = resp.body?.bytes() ?: throw IOException("下载内容为空")
-
-        val safeName = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(30)
+        val safeName = title.replace(Regex("[\\\\/:*?\"<>|\\n]"), "_").take(30)
         val dir = File(context.cacheDir, "shared").apply { mkdirs() }
         val file = File(dir, "video_${System.currentTimeMillis()}.$ext")
         file.writeBytes(bytes)
-
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val share = Intent(Intent.ACTION_SEND).apply {
             type = "video/$ext"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_TITLE, safeName)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        // 优先微信
-        val wechat = context.packageManager.getLaunchIntentForPackage("com.tencent.mm")
-        if (wechat != null) {
-            share.setPackage("com.tencent.mm")
-            share.action = Intent.ACTION_SEND
-        }
+        share.setPackage("com.tencent.mm")
         context.startActivity(Intent.createChooser(share, "分享视频"))
     }
 }
 
-// ─── Compose UI ───
-class MainActivity : ComponentActivity() {
-    private lateinit var api: ApiClient
-    private lateinit var saver: VideoSaver
+fun platformLabel(p: String): String = when (p) {
+    "douyin" -> "抖音"
+    "wechat_channels" -> "视频号"
+    "bilibili" -> "B站"
+    "xiaohongshu" -> "小红书"
+    "kuaishou" -> "快手"
+    "ixigua" -> "西瓜视频"
+    else -> p
+}
 
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // TODO: 替换为你的服务器地址
-        val baseUrl = "http://150.109.83.73:8080" // 生产服务器
-        api = ApiClient(baseUrl)
-        saver = VideoSaver(this)
-
-        // 处理系统分享/链接跳转
+        val baseUrl = "http://150.109.83.73:8080"
+        val api = ApiClient(baseUrl)
+        val saver = VideoSaver(this)
         var sharedText = ""
         if (intent?.action == Intent.ACTION_SEND) {
             sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
         } else if (intent?.action == Intent.ACTION_VIEW) {
             sharedText = intent.data?.toString() ?: ""
         }
-
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme()) {
-                MainScreen(api, saver, initialText = sharedText)
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = AppColors.Primary,
+                    background = AppColors.Surface,
+                    surface = AppColors.CardBg
+                )
+            ) {
+                AppScreen(api, saver, initialText = sharedText)
             }
         }
     }
 }
 
 @Composable
-fun MainScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
+fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
     var inputText by remember { mutableStateOf(initialText) }
     var isLoading by remember { mutableStateOf(false) }
+    var isDownloading by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<ParseResult?>(null) }
     var statusMsg by remember { mutableStateOf("") }
-    var downloadedUri by remember { mutableStateOf<Uri?>(null) }
+    var statusIsError by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .background(AppColors.Surface)
+            .verticalScroll(rememberScrollState())
     ) {
-        Spacer(Modifier.height(40.dp))
-        Text("视频保存", fontSize = 28.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text("粘贴分享链接，保存到相册或分享到微信", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(24.dp))
-
-        // 输入框
-        OutlinedTextField(
-            value = inputText,
-            onValueChange = { inputText = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("粘贴抖音/视频号/B站分享链接或文案…") },
-            minLines = 2,
-            maxLines = 4,
-            shape = MaterialTheme.shapes.medium
-        )
-        Spacer(Modifier.height(12.dp))
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    clipboard.getText()?.let {
-                        inputText = it.text
-                        statusMsg = ""
-                    }
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("粘贴") }
-
-            OutlinedButton(
-                onClick = {
-                    inputText = ""
-                    result = null
-                    statusMsg = ""
-                    downloadedUri = null
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("清空") }
-
-            Button(
-                onClick = {
-                    scope.launch {
-                        isLoading = true
-                        result = null
-                        downloadedUri = null
-                        statusMsg = "正在解析…"
-                        try {
-                            result = api.parse(inputText)
-                            statusMsg = if (result?.ok == true) "解析成功" else "解析失败"
-                        } catch (e: Exception) {
-                            statusMsg = "解析失败: ${e.message}"
-                        }
-                        isLoading = false
-                    }
-                },
-                enabled = !isLoading && inputText.isNotBlank(),
-                modifier = Modifier.weight(1f)
-            ) { Text(if (isLoading) "解析中…" else "解析") }
+        // ── 渐变头部 ──
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(AppColors.GradientStart, AppColors.GradientEnd)
+                    )
+                )
+                .padding(vertical = 36.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("视频保存", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "粘贴链接 · 一键保存到相册 · 分享微信",
+                    fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f)
+                )
+            }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Spacer(Modifier.height(24.dp))
 
-        // 状态信息
-        if (statusMsg.isNotEmpty()) {
-            Text(statusMsg, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(12.dp))
-        }
+            // ── 输入卡片 ──
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("粘贴抖音 / 视频号 / B站分享链接…", fontSize = 14.sp, color = AppColors.TextSecondary) },
+                        minLines = 2,
+                        maxLines = 4,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AppColors.Primary,
+                            unfocusedBorderColor = Color(0xFFE5E7EB)
+                        )
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 粘贴
+                        OutlinedButton(
+                            onClick = {
+                                clipboard.getText()?.let {
+                                    inputText = it.text
+                                    statusMsg = ""
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AppColors.Primary)
+                        ) { Text("📋 粘贴", fontSize = 14.sp) }
 
-        // 解析结果
-        result?.let { r ->
-            if (r.ok) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text(r.title, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                        if (r.author.isNotBlank()) {
-                            Text("by ${r.author}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        r.duration?.takeIf { it > 0 }?.let {
-                            Text("时长: ${it.toInt()}秒", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        r.videoHeight?.takeIf { it > 0 }?.let {
-                            Text("画质: ${it}p ${r.ext.uppercase()}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        // 清空
+                        OutlinedButton(
+                            onClick = {
+                                inputText = ""
+                                result = null
+                                statusMsg = ""
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AppColors.TextSecondary)
+                        ) { Text("🗑 清空", fontSize = 14.sp) }
+
+                        // 解析
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isLoading = true
+                                    result = null
+                                    statusMsg = "正在解析…"
+                                    statusIsError = false
+                                    try {
+                                        result = api.parse(inputText)
+                                        statusMsg = if (result?.ok == true) "✅ 解析成功" else "❌ 解析失败"
+                                        statusIsError = result?.ok != true
+                                    } catch (e: Exception) {
+                                        statusMsg = "❌ ${e.message}"
+                                        statusIsError = true
+                                    }
+                                    isLoading = false
+                                }
+                            },
+                            enabled = !isLoading && inputText.isNotBlank(),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1.2f),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(6.dp))
+                                Text("解析中", fontSize = 14.sp, color = Color.White)
+                            } else {
+                                Text("🔍 解析", fontSize = 14.sp, color = Color.White)
+                            }
                         }
                     }
-                }
-                Spacer(Modifier.height(12.dp))
-
-                // 操作按钮
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                statusMsg = "正在下载…"
-                                try {
-                                    downloadedUri = saver.downloadAndSave(r.videoUrl, r.title, r.ext)
-                                    statusMsg = "已保存到相册（Movies/VideoSaver）"
-                                } catch (e: Exception) {
-                                    statusMsg = "保存失败: ${e.message}"
-                                }
-                            }
-                        },
-                        enabled = !isLoading && r.videoUrl.isNotBlank(),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("保存到相册") }
-
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                statusMsg = "正在下载…"
-                                try {
-                                    saver.downloadAndShare(r.videoUrl, r.title, r.ext)
-                                    statusMsg = "已打开分享面板"
-                                } catch (e: Exception) {
-                                    statusMsg = "分享失败: ${e.message}"
-                                }
-                            }
-                        },
-                        enabled = !isLoading && r.videoUrl.isNotBlank(),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("分享到微信") }
                 }
             }
+
+            // ── 状态消息 ──
+            if (statusMsg.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    statusMsg,
+                    fontSize = 14.sp,
+                    color = when {
+                        statusIsError -> AppColors.Error
+                        else -> AppColors.Success
+                    },
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // ── 结果卡片 ──
+            result?.let { r ->
+                if (r.ok) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = AppColors.CardBg),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column {
+                            // 封面图
+                            if (r.coverUrl.isNotBlank()) {
+                                AsyncImage(
+                                    model = r.coverUrl,
+                                    contentDescription = "封面",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .aspectRatio(16f / 9f)
+                                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+
+                            Column(Modifier.padding(16.dp)) {
+                                // 平台标签
+                                if (r.platform.isNotBlank()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = AppColors.Primary.copy(alpha = 0.1f)
+                                    ) {
+                                        Text(
+                                            platformLabel(r.platform),
+                                            fontSize = 12.sp,
+                                            color = AppColors.Primary,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                }
+
+                                // 标题
+                                Text(
+                                    r.title,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = AppColors.TextPrimary,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    lineHeight = 21.sp
+                                )
+
+                                // 作者
+                                if (r.author.isNotBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = AppColors.Primary.copy(alpha = 0.15f),
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text("👤", fontSize = 12.sp)
+                                            }
+                                        }
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            r.author,
+                                            fontSize = 13.sp,
+                                            color = AppColors.TextSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                // 时长（有值才显示）
+                                r.duration?.takeIf { it > 0 }?.let {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("⏱ ${it.toInt()} 秒", fontSize = 13.sp, color = AppColors.TextSecondary)
+                                }
+
+                                // 画质（有值才显示）
+                                r.videoHeight?.takeIf { it > 0 }?.let {
+                                    Text("📺 ${it}p · ${r.ext.uppercase()}", fontSize = 13.sp, color = AppColors.TextSecondary)
+                                }
+
+                                Spacer(Modifier.height(16.dp))
+
+                                // 操作按钮
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                isDownloading = true
+                                                statusMsg = "正在下载…"
+                                                statusIsError = false
+                                                try {
+                                                    saver.downloadAndSave(r.videoUrl, r.title, r.ext)
+                                                    statusMsg = "✅ 已保存到相册"
+                                                } catch (e: Exception) {
+                                                    statusMsg = "❌ 保存失败: ${e.message}"
+                                                    statusIsError = true
+                                                }
+                                                isDownloading = false
+                                            }
+                                        },
+                                        enabled = !isDownloading && r.videoUrl.isNotBlank(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
+                                    ) {
+                                        Text("💾 保存到相册", fontSize = 14.sp, color = Color.White)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                isDownloading = true
+                                                statusMsg = "正在下载…"
+                                                statusIsError = false
+                                                try {
+                                                    saver.downloadAndShare(r.videoUrl, r.title, r.ext)
+                                                    statusMsg = "✅ 已打开分享面板"
+                                                } catch (e: Exception) {
+                                                    statusMsg = "❌ 分享失败: ${e.message}"
+                                                    statusIsError = true
+                                                }
+                                                isDownloading = false
+                                            }
+                                        },
+                                        enabled = !isDownloading && r.videoUrl.isNotBlank(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = AppColors.Success)
+                                    ) {
+                                        Text("💬 分享微信", fontSize = 14.sp, color = Color.White)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(32.dp))
+
+            // ── 底部说明 ──
+            Text(
+                "仅保存你有权使用的公开内容\n请遵守平台服务条款与法律法规",
+                fontSize = 12.sp,
+                color = AppColors.TextSecondary.copy(alpha = 0.7f),
+                lineHeight = 18.sp,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
