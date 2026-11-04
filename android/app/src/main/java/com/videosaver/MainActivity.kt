@@ -157,7 +157,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // TODO: 替换为你的服务器地址
-        val baseUrl = "http://10.0.2.2:8080" // 本地测试；部署后改为 https://video.example.com
+        val baseUrl = "http://150.109.83.73:8080" // 生产服务器
         api = ApiClient(baseUrl)
         saver = VideoSaver(this)
 
