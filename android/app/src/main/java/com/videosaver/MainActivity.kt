@@ -270,14 +270,16 @@ fun MainScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
             if (r.ok) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text(r.title, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        Text(r.title, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         if (r.author.isNotBlank()) {
                             Text("by ${r.author}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        r.duration?.let {
+                        r.duration?.takeIf { it > 0 }?.let {
                             Text("时长: ${it.toInt()}秒", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("画质: ${r.videoHeight ?: "?"}p ${r.ext.uppercase()}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        r.videoHeight?.takeIf { it > 0 }?.let {
+                            Text("画质: ${it}p ${r.ext.uppercase()}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
