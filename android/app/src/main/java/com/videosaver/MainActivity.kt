@@ -266,10 +266,10 @@ fun AppScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("一诺视频助手", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("一诺秒存", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "粘贴链接 · 保存相册 · 一键分享微信",
+                    "粘贴链接 · 秒存相册 · 一键分享微信",
                     fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f)
                 )
             }

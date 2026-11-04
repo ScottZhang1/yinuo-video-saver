@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="一诺视频助手"
+        android:label="一诺秒存"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.VideoSaver"
         android:allowBackup="false" android:usesCleartextTraffic="true">
