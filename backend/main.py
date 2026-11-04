@@ -1,10 +1,10 @@
-"""视频解析 API — yt-dlp 封装"""
-import asyncio
+"""视频解析 API — 双引擎：Mtotech API（抖音/视频号）+ yt-dlp（其他平台）"""
 import json
 import re
 import subprocess
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,8 +12,11 @@ from pydantic import BaseModel
 app = FastAPI(title="Video Saver API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+MTOTECH_BASE = "https://v.mtotech.com"
 YT_DLP = "yt-dlp"
 TIMEOUT = 30
+
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 
 class ParseRequest(BaseModel):
@@ -21,15 +24,13 @@ class ParseRequest(BaseModel):
 
 
 def extract_url(text: str) -> str | None:
-    """从分享文案中提取URL"""
     m = re.search(r'https?://[^\s<>"\')\]]+', text)
     return m.group(0) if m else None
 
 
 def detect_platform(url: str) -> str:
-    """识别平台"""
     u = url.lower()
-    if "douyin.com" in u or "v.douyin" in u or "iesdouyin.com" in u:
+    if "douyin.com" in u or "iesdouyin.com" in u:
         return "douyin"
     if "weixin.qq.com/sph" in u or "channels.weixin" in u:
         return "wechat_channels"
@@ -44,60 +45,104 @@ def detect_platform(url: str) -> str:
     return "unknown"
 
 
-def run_ytdlp(url: str) -> dict:
-    """调用 yt-dlp 解析视频信息"""
-    cmd = [
-        YT_DLP, "--dump-json", "--no-playlist", "--no-warnings",
-        "--socket-timeout", str(TIMEOUT), url
-    ]
+def resolve_short_url(url: str) -> str:
+    """解析短链接（如 v.douyin.com）到最终URL"""
+    if not re.search(r'v\.douyin\.com|xhslink', url):
+        return url
+    try:
+        with httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": UA}) as c:
+            r = c.get(url)
+            return str(r.url)
+    except Exception:
+        return url
+
+
+async def parse_via_mtotech(url: str, platform: str) -> dict | None:
+    """通过 mtotech API 解析（抖音/视频号等国内平台）"""
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+            if platform == "wechat_channels":
+                resp = await c.post(f"{MTOTECH_BASE}/api/resolve", json={"url": url})
+            else:
+                resp = await c.post(f"{MTOTECH_BASE}/api/media/resolve",
+                                    json={"url": url, "platform": platform})
+            data = resp.json()
+            if data.get("ok"):
+                d = data["data"]
+                return {
+                    "ok": True,
+                    "platform": d.get("platform", platform),
+                    "title": d.get("title") or d.get("description", ""),
+                    "author": d.get("author", ""),
+                    "cover_url": d.get("cover_url", ""),
+                    "duration": d.get("duration"),
+                    "video_url": d.get("download_url") or d.get("h264_url") or d.get("preview_url", ""),
+                    "ext": "mp4",
+                    "source": "mtotech",
+                }
+    except Exception:
+        return None
+    return None
+
+
+def parse_via_ytdlp(url: str) -> dict:
+    """通过 yt-dlp 解析（B站/YouTube/其他国际平台）"""
+    cmd = [YT_DLP, "--dump-json", "--no-playlist", "--no-warnings", "--socket-timeout", str(TIMEOUT), url]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT + 10)
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "login" in stderr.lower() or "private" in stderr.lower():
                 raise HTTPException(403, detail="该视频需要登录或为私密内容")
-            if "unsupported" in stderr.lower() or "no video" in stderr.lower():
-                raise HTTPException(404, detail="不支持该链接或未找到视频")
+            if "unsupported" in stderr.lower():
+                raise HTTPException(404, detail="不支持该链接")
             raise HTTPException(500, detail=f"解析失败: {stderr[:200]}")
-        return json.loads(result.stdout)
+        info = json.loads(result.stdout)
+        # 找最佳mp4
+        best = None
+        for f in reversed(info.get("formats") or []):
+            if f.get("vcodec") != "none" and f.get("ext") in ("mp4", "webm"):
+                if not best or (f.get("height") or 0) > (best.get("height") or 0):
+                    best = f
+        return {
+            "ok": True,
+            "platform": info.get("extractor_key", "").lower().replace(" ", "_"),
+            "title": info.get("title", ""),
+            "author": info.get("uploader", ""),
+            "cover_url": info.get("thumbnail", ""),
+            "duration": info.get("duration"),
+            "width": info.get("width"),
+            "height": info.get("height"),
+            "video_url": (best or {}).get("url") or info.get("url", ""),
+            "ext": (best or {}).get("ext", "mp4"),
+            "source": "ytdlp",
+        }
     except subprocess.TimeoutExpired:
-        raise HTTPException(504, detail="解析超时，请稍后重试")
+        raise HTTPException(504, detail="解析超时")
     except json.JSONDecodeError:
-        raise HTTPException(500, detail="解析返回格式异常")
+        raise HTTPException(500, detail="返回格式异常")
 
 
 @app.post("/api/v1/parse")
 async def parse(req: ParseRequest):
-    """解析视频链接，返回下载地址和元信息"""
+    """统一解析入口"""
     url = extract_url(req.url)
     if not url:
         raise HTTPException(400, detail="未找到有效链接，请粘贴完整分享文案")
 
     platform = detect_platform(url)
-    info = run_ytdlp(url)
+    url = resolve_short_url(url)
 
-    # 选择最佳格式
-    formats = info.get("formats") or []
-    best = None
-    for f in reversed(formats):
-        if f.get("vcodec") != "none" and f.get("ext") in ("mp4", "webm"):
-            if not best or (f.get("height") or 0) > (best.get("height") or 0):
-                best = f
-    video_url = (best or {}).get("url") or info.get("url") or ""
+    # 抖音/视频号/小红书/快手/西瓜 → mtotech API 优先
+    if platform in ("douyin", "wechat_channels", "xiaohongshu", "kuaishou", "ixigua"):
+        result = await parse_via_mtotech(url, platform)
+        if result:
+            return result
+        # mtotech失败 → yt-dlp 兜底
+        return parse_via_ytdlp(url)
 
-    return {
-        "ok": True,
-        "platform": platform,
-        "title": info.get("title", ""),
-        "author": info.get("uploader", ""),
-        "cover_url": info.get("thumbnail", ""),
-        "duration": info.get("duration"),
-        "width": info.get("width"),
-        "height": info.get("height"),
-        "video_url": video_url,
-        "ext": (best or {}).get("ext", "mp4"),
-        "filesize": (best or {}).get("filesize") or info.get("filesize"),
-    }
+    # B站/YouTube/其他 → yt-dlp
+    return parse_via_ytdlp(url)
 
 
 @app.get("/api/v1/health")
