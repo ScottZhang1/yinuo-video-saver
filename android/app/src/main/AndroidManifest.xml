@@ -5,7 +5,7 @@
 
     <application
         android:label="视频保存"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_launcher_legacy"
         android:theme="@style/Theme.VideoSaver"
         android:allowBackup="false" android:usesCleartextTraffic="true">
 

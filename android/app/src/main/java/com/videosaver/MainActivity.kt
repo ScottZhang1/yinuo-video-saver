@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.*
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -40,7 +41,8 @@ data class ParseResult(
     val videoUrl: String = "",
     val duration: Double? = null,
     val ext: String = "mp4",
-    val platform: String = ""
+    val platform: String = "",
+    val videoHeight: Int? = null
 )
 
 // ─── API 客户端 ───
@@ -68,7 +70,8 @@ class ApiClient(private val baseUrl: String) {
             videoUrl = json.optString("video_url"),
             duration = if (json.has("duration")) json.optDouble("duration") else null,
             ext = json.optString("ext", "mp4"),
-            platform = json.optString("platform")
+            platform = json.optString("platform"),
+            videoHeight = if (json.has("height")) json.optInt("height") else null
         )
     }
 }
@@ -274,7 +277,7 @@ fun MainScreen(api: ApiClient, saver: VideoSaver, initialText: String = "") {
                         r.duration?.let {
                             Text("时长: ${it.toInt()}秒", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("画质: ${r.height ?: "?"}p ${r.ext.uppercase()}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("画质: ${r.videoHeight ?: "?"}p ${r.ext.uppercase()}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
